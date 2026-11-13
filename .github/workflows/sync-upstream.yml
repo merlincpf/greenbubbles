@@ -1,0 +1,53 @@
+name: Sync GreenBubbles upstream
+on:
+  schedule:
+    - cron: '43 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: greenbubbles-upstream-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    if: github.repository == 'merlincpf/greenbubbles'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Sync branches and new tags without force-pushing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORK: merlincpf/greenbubbles
+          UPSTREAM: bojieli/greenbubbles
+        run: |
+          set -euo pipefail
+          unset GIT_DIR GIT_WORK_TREE
+          git init --bare -q "$RUNNER_TEMP/sync.git"
+          cd "$RUNNER_TEMP/sync.git"
+          git remote add upstream "https://github.com/$UPSTREAM.git"
+          git remote add fork "https://github.com/$FORK.git"
+          gh auth setup-git
+          git fetch -q --no-tags upstream '+refs/heads/*:refs/upstream/heads/*' '+refs/tags/*:refs/upstream/tags/*'
+          git fetch -q --no-tags fork '+refs/heads/*:refs/fork/heads/*' '+refs/tags/*:refs/fork/tags/*'
+          status=0
+          while IFS= read -r ref; do
+            suffix=${ref#refs/upstream/}
+            target="refs/$suffix"
+            current="refs/fork/$suffix"
+            if ! git show-ref --verify --quiet "$current"; then
+              git push fork "$ref:$target" || status=1
+            elif [[ "$(git rev-parse "$ref")" == "$(git rev-parse "$current")" ]]; then
+              continue
+            elif [[ "$suffix" == tags/* ]]; then
+              echo "::warning::Upstream moved $target; existing fork tag preserved"
+              status=1
+            elif git merge-base --is-ancestor "$current" "$ref"; then
+              git push fork "$ref:$target" || status=1
+            elif git merge-base --is-ancestor "$ref" "$current"; then
+              continue
+            else
+              gh api -X POST "repos/$FORK/merge-upstream" -f "branch=${suffix#heads/}" --silent || status=1
+            fi
+          done < <(git for-each-ref --format='%(refname)' refs/upstream/)
+          exit "$status"
