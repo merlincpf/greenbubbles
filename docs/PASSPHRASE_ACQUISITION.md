@@ -68,10 +68,11 @@ greenbubbles chats --limit 20
 ## Command options
 
 ```sh
-greenbubbles-acquire preflight [--json] [--db-root <path>]
-greenbubbles-acquire capture [--output <path>] [--timeout-seconds 300] \
-  [--db-root <path>] [--overwrite]
-greenbubbles-acquire verify --passphrase-stdin [--db-root <path>]
+greenbubbles-acquire preflight [--json] [--profile <name>] [--db-root <path>] \
+  [--pid <n>]
+greenbubbles-acquire capture [--profile <name>] [--output <path>] \
+  [--timeout-seconds 300] [--db-root <path>] [--pid <n>] [--overwrite]
+greenbubbles-acquire verify --passphrase-stdin [--profile <name>] [--db-root <path>]
 ```
 
 - **`preflight`** checks that WeChat is installed and running, whether it has
@@ -85,13 +86,63 @@ greenbubbles-acquire verify --passphrase-stdin [--db-root <path>]
 - **`verify`** checks a saved key against your databases without touching
   WeChat. Pipe the key file into it. Use it after WeChat creates new database
   files; the same key opens them, so you don't need to capture again.
+- **`--profile`** uses a live [query profile](QUERY_PROFILES.md): its
+  `sourceRoot` is the data folder and its `credentialFile` is where `capture`
+  writes the key. Without `--profile`, the tool picks the same source as an
+  ordinary `greenbubbles` query:
+  1. When `~/.greenbubbles/query-profiles.json` exists, its `defaultProfile`.
+     A file with no `defaultProfile` is an error; pass `--profile`. A file
+     whose only profile still has the `/ABSOLUTE/...` template path counts as
+     no file.
+  2. Otherwise `~/.greenbubbles/config.toml`: `profile.default`, or
+     `source.root` and `source.passphrase_file`. The tool reads only plain
+     `[table]` headers and `key = "string"` lines there.
+  3. Otherwise the discovered data folder and
+     `~/.greenbubbles-acquire/passphrase.txt`.
+
+  The profile must use `liveWeChatKeyFile` access; a snapshot or decrypted
+  profile is an error unless you give both `--db-root` and `--output`.
+  `--output` overrides the key file. `--db-root` overrides the data folder;
+  when a profile or `config.toml` sets the data folder, `capture` refuses a
+  different `--db-root` unless you also pass `--output`, so one account's key
+  never replaces the key file another account's queries read (including the
+  default file when `config.toml` sets only `source.root`). When `config.toml`
+  sets only `source.passphrase_file`, any `--db-root` needs `--output` too.
+  Roots are compared after resolving symbolic links, and a data folder path
+  (`--db-root`, `sourceRoot`, `source.root`) may not contain `..`.
+  `preflight` applies the same checks, so it reports ready only for a
+  target `capture` would accept, and its suggested command keeps
+  `--profile`, `--db-root`, `--output`, `--pid`, and any `--preserve-env` you need. Both files are read with the same rules as the
+  `greenbubbles` CLI (owner-only file in an owner-only folder, no symbolic
+  links, at most 64 KiB, `formatVersion` 1, no unknown fields).
+  `GREENBUBBLES_QUERY_PROFILES_FILE` and `GREENBUBBLES_CONFIG_FILE` must be
+  absolute paths (the second is checked only when `config.toml` is used). `sudo` removes them from the environment by default; keep
+  them with `sudo --preserve-env=GREENBUBBLES_QUERY_PROFILES_FILE,GREENBUBBLES_CONFIG_FILE`
+  or the tool reads the files in your home folder.
 - **`--db-root`** points at a specific WeChat data folder. The tool selects a root
   automatically only when discovery finds exactly one. With several accounts,
-  choose the intended directory explicitly. This option selects data on disk.
-  It does not select a running application copy.
+  choose the intended directory explicitly.
+- **Which WeChat process is used:** the tool attaches to your own WeChat
+  process whose app owns the data folder. A folder inside
+  `~/Library/Containers/<bundle id>/` belongs to the app with that bundle ID,
+  so with two copies of WeChat running (for example a duplicate made to run a
+  second account), the copy that owns the selected account is chosen whatever
+  its process ID. Preflight shows the chosen process ID and bundle ID. If that
+  copy isn't running, or several of its processes are, preflight stops instead
+  of guessing. WeChat processes of other macOS users are never considered.
+- **`--pid`** chooses the WeChat process yourself. It must be your own
+  process, running a WeChat app's main executable, and when the data folder is
+  in an app container that app must own it. You need it when the data folder
+  is in a group container or anywhere else outside an app container, because
+  then the owning app can't be told from the path. It also picks one of two
+  instances of the same app; the capture then keeps that process and, if it
+  restarts at logout, follows only a new process, never the other instance.
+  The suggested capture command after a successful preflight repeats it. To
+  list the running copies and their apps: `pgrep -lf /Contents/MacOS/WeChat`.
 
 The WeChat version is shown for information only. The tool does not refuse a
-version it hasn't seen, but it has only been tested on WeChat 4.1.12 and 4.1.13.
+version it hasn't seen. Confirmed captures are listed under
+[What has been tested](#what-has-been-tested).
 
 ## If something goes wrong
 
@@ -101,16 +152,51 @@ file, even when `--overwrite` was requested. Any file already at the output
 path belongs to an earlier run.
 
 - **"Hardened Runtime is still active":** you haven't re-signed WeChat, or you
-  didn't restart it after re-signing. macOS blocks the attach.
+  didn't restart it after re-signing. macOS blocks the attach. Preflight checks
+  the selected process and reads the version and signature from that process's
+  own app, so for a duplicated copy it prints the re-sign command for that
+  copy. Add `--include-paths` to show that copy's path in the command.
+- **"The WeChat app that owns the database root … is not running":** another
+  WeChat copy is running, but the selected account belongs to a different
+  copy. Start that copy and log in, or pick another account with `--db-root`.
+- **"… WeChat processes belong to …" or "Multiple WeChat processes":** more
+  than one process could be the target. Quit the extras, or choose one with
+  `--pid`.
+- **"The database root is not inside a WeChat app container":** the data
+  folder is in a group container or another location. Choose the process with
+  `--pid`.
+- **"Process … runs …, but the database root belongs to …":** the `--pid`
+  process is a different copy of WeChat from the one that owns the data.
 - **Timed out:** you didn't log out and back in within the time limit. Run
   `capture` again. An idle, logged-in WeChat never reveals the key.
-- **Verification failed:** no database salt group matched the candidate. The
-  diagnostic reports the counts of groups and files examined. These counts do
-  not identify the cause or establish compatibility with the installed build.
+- **Verification failed:** no database salt group matched any captured
+  candidate, so nothing was saved. The tool keeps waiting past a candidate that
+  doesn't match until the time limit. The diagnostic reports the counts of
+  groups and files examined. These counts do not identify the cause or
+  establish compatibility with the installed build. Check that you logged back
+  into the same account.
 - **WeChat updated:** re-sign it and restart it before capturing again. A key
   you already saved keeps working as long as `verify` succeeds.
 
 ## Where the key is saved
+
+If you use [query profiles](QUERY_PROFILES.md), the key goes to the profile's
+`credentialFile` instead (see `--profile` above).
+
+Although `capture` runs with `sudo`, it reads the profile files, finds and
+reads the databases, and writes the key with the rights of the account that
+ran `sudo` (checked against `SUDO_UID`); only the debugger attach uses root.
+The key file and any folders it creates therefore
+belong to you, and the tool cannot create or replace a file anywhere you could
+not write yourself. It refuses an existing file that belongs to someone else, a
+key path containing `.` or `..`, and an output folder that is a symbolic link
+(use `/private/tmp`, not `/tmp`). `greenbubbles` reads a key only from a folder
+you own with mode `700`; `capture` prints a note when the folder is wider.
+
+The data folder must be a real folder you own, not a symbolic link, as the
+`greenbubbles` CLI requires. To check this behaviour on your Mac with
+synthetic data only, run `scripts/sudo-smoke-test-acquire.sh` from a checkout
+(as yourself; it calls `sudo` for the privileged steps).
 
 The key is saved as 64 hexadecimal characters in
 `~/.greenbubbles-acquire/passphrase.txt`. The output file has mode `0600`.
@@ -150,19 +236,29 @@ it is why you have to log out and back in.
 `greenbubbles-acquire capture` does this:
 
 1. Attaches Apple's `lldb` debugger to WeChat and pauses on
-   `CCKeyDerivationPBKDF` only when the password passed to it is exactly 32
-   bytes long.
-2. When you log back in, it reads those 32 bytes once (from register `x1` on
-   Apple silicon, `rsi` on Intel), then detaches. It reads nothing else and
-   changes nothing in WeChat. Because it pauses on a macOS function rather than
-   on WeChat's own code, it does not depend on a particular WeChat version.
+   `CCKeyDerivationPBKDF` only for the SQLCipher account-key derivation:
+   PBKDF2, a 32-byte password, a 16-byte salt, HMAC-SHA512, and 256,000
+   rounds. Other calls, including other 32-byte passwords, are ignored.
+2. When you log back in, it reads those 32 bytes (from register `x1` on
+   Apple silicon, `rsi` on Intel). It reads nothing else and changes nothing
+   in WeChat. If those bytes do not open your databases, it keeps waiting for
+   another matching call until the time limit. It detaches after a candidate
+   checks out, or when the time limit expires. Because it pauses on a macOS
+   function rather than on WeChat's own code, it does not depend on a
+   particular WeChat version, as long as that version derives the account key
+   with these parameters.
 3. On WeChat 4.1.13, logging out ends the WeChat process and logging in starts
-   a new one. The tool notices and follows the new process.
+   a new one. The tool notices and follows the new process of the same app
+   copy (same app path and bundle ID), never another copy that is running.
+   It only accepts a process that started after it saw the old one exit, so
+   another instance that was already running is never taken for the new one.
+   If none qualifies, it keeps waiting until the time limit.
 4. For each database file, it computes the file's key on your Mac
    (PBKDF2-HMAC-SHA512, 256,000 rounds, with that file's 16-byte salt).
 5. It proves each computed key is correct by checking SQLCipher 4's
-   authentication code on the file's first page. A key that fails this check is
-   never saved.
+   authentication code on the file's first page. A candidate that fails this
+   check is discarded and capture continues. A key is written only after at
+   least one database accepts it.
 
 Only the account key is saved. The per-file keys exist in memory only during
 the check and are then erased.
@@ -179,8 +275,16 @@ existing backup, never use this capture.
 - **2026-08-28, WeChat 4.1.13:** after WeChat auto-updated and was re-signed, a
   capture verified all 26 databases in 45 seconds. Logging out ended the WeChat
   process and logging in started a new one; the capture followed it.
+- **2026-10-31, WeChat 4.2.0 (build 270345), macOS 27.0.1, Apple silicon:**
+  GreenBubbles v0.10.0 stopped on an unrelated 32-byte `CCKeyDerivationPBKDF`
+  call. Verification failed and nothing was written. A capture that instead
+  required PBKDF2, a 32-byte password, a 16-byte salt, HMAC-SHA512, and
+  256,000 rounds verified all 26 databases (26 distinct salts). Live reads
+  then succeeded. On WeChat 4.1.15 (build 270100), macOS 26.6.2, Apple
+  silicon, the same parameter filter plus verification before giving up was
+  reported to succeed against 22 databases.
 
-That is two successful runs on one Mac and one account. It is not a promise
+These are specific Macs, WeChat versions, and accounts. They are not a promise
 that it will work on your Mac, your WeChat version, or your account.
 
 ## Credits

@@ -29,7 +29,10 @@ greenbubbles messages list --help
 ```
 
 Version 0.10.0 adds nickname/remark/alias selection, `chats find`, and
-command-line `--query` search. If a local build shadows Homebrew, use `command -v
+command-line `--query` search. Version 0.11.0 makes `greenbubbles-acquire`
+follow query profiles and `config.toml`, write the key as the user who ran
+`sudo`, and attach to the WeChat copy that owns the data folder (`--pid` picks
+one explicitly). If a local build shadows Homebrew, use `command -v
 greenbubbles` to identify the selected binary before concluding an upgrade
 failed. A successful help check confirms syntax, not database access. Verify
 access with `source status` before reading messages. The setup check does not
@@ -49,6 +52,11 @@ WeChat account currently in use and read
 `~/.greenbubbles-acquire/passphrase.txt`. They do not print the key or the
 source path. A missing passphrase file or an unreadable database returns
 `invalidProfile`, with a plain-language explanation on the terminal.
+
+Once `~/.greenbubbles/query-profiles.json` exists, its `defaultProfile` wins
+and the key is that profile's `credentialFile`, not
+`~/.greenbubbles-acquire/passphrase.txt`. Judge access by `greenbubbles source
+status` (or `doctor.py`), never by whether the default key file exists.
 
 A different database or passphrase file belongs in
 `~/.greenbubbles/config.toml`, not on the command line:
@@ -126,10 +134,15 @@ sudo greenbubbles-acquire capture
 ```
 
 The helper does not automate re-signing or sudo. Keep these owner-operated steps
-visible; do not run them as a side effect of a query or setup check. The default
-key output is `~/.greenbubbles-acquire/passphrase.txt` for the invoking environment;
-confirm the actual helper output path and file ownership before configuring a
-profile. Use explicit `--output` and `--db-root` from helper help when needed.
+visible; do not run them as a side effect of a query or setup check. Capture
+writes the key where queries will read it: the default query profile's
+`credentialFile` when a live profile file exists, otherwise
+`~/.greenbubbles-acquire/passphrase.txt`. The helper writes as the user who
+ran `sudo`, so the file belongs to that user. For a second account, run only
+that WeChat copy and pass `--profile <name>`; explicit `--output` overrides the
+profile. Never add, change, or redirect a profile's `credentialFile` or
+`config.toml`'s `source.passphrase_file` on your own, and never point them
+outside the user's home; ask the user to edit those paths.
 Never request the key in chat. If capture fails, report its prerequisite failure;
 do not repeatedly attach or modify the application.
 
